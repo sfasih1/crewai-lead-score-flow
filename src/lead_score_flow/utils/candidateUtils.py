@@ -1,6 +1,7 @@
 from typing import List
 
 from lead_score_flow.types import Candidate, CandidateScore, ScoredCandidate
+import csv
 
 
 def combine_candidates_with_scores(
@@ -33,4 +34,17 @@ def combine_candidates_with_scores(
             )
 
     print("SCORED CANDIDATES:", scored_candidates)
+    with open("lead_scores.csv", "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["id", "name", "email", "score"])
+        for candidate in scored_candidates:
+            writer.writerow(
+                [
+                    candidate.id,
+                    candidate.name,
+                    candidate.email,
+                    candidate.score
+                ]
+            )
+    print("Lead scores saved to lead_scores.csv")
     return scored_candidates

@@ -91,6 +91,10 @@ class LeadScoreFlow(Flow[LeadScoreState]):
         # Select the top 3 candidates
         top_candidates = sorted_candidates[:3]
 
+        print("\n")
+        print("#####################################################################")
+        print("** Human in the Loop **")
+
         print("Here are the top 3 candidates:")
         for candidate in top_candidates:
             print(

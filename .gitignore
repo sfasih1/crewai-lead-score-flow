@@ -1,3 +1,4 @@
 .env
 __pycache__/
 .venv
+email_responses
