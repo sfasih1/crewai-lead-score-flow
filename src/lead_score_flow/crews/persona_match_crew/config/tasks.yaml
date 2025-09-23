@@ -1,0 +1,12 @@
+match_personas:
+  description: |
+    For the given candidate title and list of available persona descriptors, return the top matches.
+    ONLY use lexical similarity (token overlap, substring presence). Provide up to {{top_k}} results.
+    Output JSON with shape:
+    {
+      "matches": [
+        {"persona_id": str, "persona_name": str, "score": float, "rationale": str}
+      ]
+    }
+  expected_output: "A JSON object with matches list as described."
+  agent: persona_match_agent

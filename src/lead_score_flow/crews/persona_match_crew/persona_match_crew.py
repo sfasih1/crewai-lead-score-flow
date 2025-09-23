@@ -1,32 +1,30 @@
+from __future__ import annotations
+from typing import List, Dict, Any
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
-from lead_score_flow.lead_types import CandidateScore
-
 
 @CrewBase
-class LeadScoreCrew:
-    """Lead Score Crew"""
-
+class PersonaMatchCrew:
+    """Lightweight Persona Match Crew (lexical, low-cost)."""
     agents_config = "config/agents.yaml"
     tasks_config = "config/tasks.yaml"
 
     @agent
-    def hr_evaluation_agent(self) -> Agent:
+    def persona_match_agent(self) -> Agent:
         return Agent(
-            config=self.agents_config["hr_evaluation_agent"],
+            config=self.agents_config["persona_match_agent"],
             verbose=True,
         )
 
     @task
-    def evaluate_candidate_task(self) -> Task:
+    def match_personas(self) -> Task:
         return Task(
-            config=self.tasks_config["evaluate_candidate"],
-            output_pydantic=CandidateScore,
+            config=self.tasks_config["match_personas"],
+            verbose=True,
         )
 
     @crew
     def crew(self) -> Crew:
-        """Creates the Lead Score Crew"""
         return Crew(
             agents=self.agents,
             tasks=self.tasks,

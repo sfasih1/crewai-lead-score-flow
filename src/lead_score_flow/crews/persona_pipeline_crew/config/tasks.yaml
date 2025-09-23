@@ -1,0 +1,22 @@
+evaluate_personas:
+  description: >-
+    You are given the following data:
+
+    1. Candidate core fields (id, job title, company, function, level, segments)
+    2. Up to three lightweight persona matches with rough lexical similarity scores.
+
+    Your job:
+    - Enrich each persona with a short strengths list (why it fits this candidate)
+    - Add potential risks or mismatches
+    - Propose 1-3 high-impact messaging hooks referencing candidate context
+    - Assign a relevance score 0-100 (do NOT just copy lexical score; reason holistically)
+    - Provide an overall_fit short phrase (e.g., "Primary economic buyer", "Influencer", "Unlikely decision-maker")
+    - Select EXACTLY one persona as the recommended best for first outreach. Mark recommended=true for that one only.
+    - Provide a concise reasoning paragraph justifying the final selection referencing concrete role/LOB/level cues.
+
+    Output MUST be valid JSON matching the CandidatePersonaDeepDive Pydantic schema.
+  expected_output: >-
+    A JSON object with keys: candidate_id, candidate_title, assessments (list of persona assessments with persona_id, persona_name, relevance, strengths, risks, messaging_hooks, overall_fit, recommended), best_persona_id, reasoning.
+  agent: deepdive_analyst
+  async_execution: false
+  output_file: null

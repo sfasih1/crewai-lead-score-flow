@@ -2,3 +2,11 @@
 __pycache__/
 .venv
 email_responses
+# Generated CSV outputs
+lead_scores.csv
+src/lead_score_flow/lead_scores_with_persona.csv
+src/lead_score_flow/persona_matches.csv
+src/lead_score_flow/persona_top3.csv
+src/lead_score_flow/persona_deepdive_long.csv
+src/lead_score_flow/persona_deepdive_best.csv
+src/lead_score_flow/persona_deepdive_errors.csv
