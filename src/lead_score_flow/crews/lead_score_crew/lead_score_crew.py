@@ -1,3 +1,4 @@
+import os
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from lead_score_flow.lead_types import CandidateScore
@@ -12,9 +13,11 @@ class LeadScoreCrew:
 
     @agent
     def hr_evaluation_agent(self) -> Agent:
+        llm_model = os.getenv("LLM_MODEL")
         return Agent(
             config=self.agents_config["hr_evaluation_agent"],
             verbose=True,
+            llm=llm_model if llm_model else None,
         )
 
     @task

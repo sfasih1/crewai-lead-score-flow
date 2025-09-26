@@ -13,14 +13,27 @@ USE_LLM_DEEPDIVE = os.getenv("USE_LLM_DEEPDIVE", "1") == "1"  # controls deep di
 
 _api_key = None
 _api_key_source = None
-for key_name in ("OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "AZURE_API_KEY", "PERPLEXITY_API_KEY"):
+for key_name in ("OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "AZURE_API_KEY", "PERPLEXITY_API_KEY", "OPENROUTER_API_KEY"):
     val = os.getenv(key_name)
     if val:
+        # Sanitize: trim surrounding whitespace/newlines to avoid auth errors
+        val = val.strip()
+        if not val:
+            continue
         _api_key = val
         _api_key_source = key_name
+        # Ensure the sanitized value is used by downstream libraries
+        os.environ[key_name] = _api_key
+        # NEW: Handle OpenRouter specifics
+        if key_name == "OPENROUTER_API_KEY":
+            os.environ["OPENAI_API_BASE"] = "https://openrouter.ai/api/v1"
+            # Optional but recommended by OpenRouter docs
+            referrer = os.getenv("OPENROUTER_REFERRER")
+            if referrer:
+                os.environ["HTTP_REFERER"] = referrer
         break
 if (USE_LLM or USE_LLM_DEEPDIVE) and not _api_key:
-    print("ERROR: No API key found. Set OPENAI_API_KEY (or AZURE_OPENAI_API_KEY / AZURE_API_KEY) in your environment or .env file.")
+    print("ERROR: No API key found. Set an API key in your environment or .env file.")
     print("Tip: create a .env file alongside main.py with a line: OPENAI_API_KEY=sk-...  (restart your run after saving)")
     print("Alternatively in PowerShell:  $env:OPENAI_API_KEY=\"sk-...\"  and re-run.")
     raise SystemExit(1)
@@ -28,6 +41,12 @@ if os.getenv("LITELLM_DEBUG", "0") == "1" and _api_key:
     masked = _api_key[:3] + "..." + _api_key[-4:]
     src = _api_key_source or "(unknown env var)"
     print(f"LLM enabled. Using {_api_key_source}: {masked}")
+    # Print selected model for routing visibility
+    _llm_model = os.getenv("LLM_MODEL")
+    if _llm_model:
+        print(f"LLM_MODEL={_llm_model}")
+    # Add this line to debug the key
+    print(f"DEBUG: Using key from {_api_key_source} starting with '{_api_key[:7]}' and ending with '{_api_key[-4:]}'")
 if os.getenv("LITELLM_DEBUG") == "1":
     try:
         import litellm
@@ -53,6 +72,9 @@ if os.getenv("API_SANITY_CHECK", "0") == "1" and (USE_LLM or USE_LLM_DEEPDIVE):
     elif _api_key_source == "PERPLEXITY_API_KEY":
         print("Perplexity API key detected. Recommended LiteLLM model prefix: perplexity/<model>.")
         print("Example: perplexity/llama-3.1-sonar-small-128k-online (lower cost)")
+    elif _api_key_source == "OPENROUTER_API_KEY":
+        print("OpenRouter API key detected. LiteLLM will use the OpenRouter endpoint.")
+        print("Set LLM_MODEL to the desired model, e.g., 'openrouter/google/gemini-flash-1.5'")
     else:
         print("Note: Using a non-standard key env var; ensure your provider config is correct.")
     print("Set API_SANITY_CHECK=0 to silence this.")
@@ -62,7 +84,7 @@ from typing import List
 from pathlib import Path
 
 from crewai.flow.flow import Flow, listen, or_, router, start
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from lead_score_flow.lead_types import CandidatePersonaMatches
@@ -95,7 +117,10 @@ from lead_score_flow.lead_types import (
 from lead_score_flow.utils.candidateUtils import combine_candidates_with_scores
 
 
+from uuid import uuid4, UUID
+
 class LeadScoreState(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
     candidates: List[Candidate] = []
     candidate_score: List[CandidateScore] = []
     hydrated_candidates: List[ScoredCandidate] = []
@@ -112,6 +137,8 @@ class LeadScoreState(BaseModel):
     deep_dive_ran: bool = False
     persona_match_in_progress: bool = False
     deep_dive_in_progress: bool = False
+    # Router dispatch guard to prevent repeated scheduling of the same event
+    persona_match_event_dispatched: bool = False
 
     # NEW: best persona per lead (computed after scoring)
     # Removed: single best persona matches no longer needed
@@ -123,6 +150,7 @@ class LeadScoreFlow(Flow[LeadScoreState]):
 
     @start()
     def load_leads(self):
+        print("\n[FLOW_STEP] ==> @start: load_leads")
         import csv
         from tkinter import Tk, filedialog
 
@@ -170,8 +198,8 @@ class LeadScoreFlow(Flow[LeadScoreState]):
                         print(f"Auto-loaded {len(loaded_auto)} persona(s) from {crew_dir}")
 
         if not self.state.personas:
-            # search project root (where script launched) for persona JSON exports
-            project_root = Path.cwd()
+            # search project root for persona JSON exports
+            project_root = Path(__file__).parent.parent.parent
             root_json = list(project_root.glob("*.json"))
             # Filter likely persona files (contain 'INOV' or have 'Provider'/'Payer' etc.)
             persona_like = [f for f in root_json if any(k in f.name for k in ["INOV", "Provider", "Payer", "Pharmacy", "Insights"]) ] or root_json
@@ -180,7 +208,7 @@ class LeadScoreFlow(Flow[LeadScoreState]):
                 if loaded_auto:
                     self.state.personas = loaded_auto
                     self.state.persona_folder = str(project_root)
-                    print(f"Auto-loaded {len(loaded_auto)} persona(s) from project root")
+                    print(f"Auto-loaded {len(loaded_auto)} persona(s) from project root: {project_root}")
 
         # De-duplicate personas by (id or name)
         if self.state.personas:
@@ -280,13 +308,17 @@ class LeadScoreFlow(Flow[LeadScoreState]):
 
         # Update the state with the loaded candidates
         self.state.candidates = candidates
+        print("[FLOW_STEP] <== Exiting: load_leads")
 
     @listen(or_(load_leads, "scored_leads_feedback"))
     async def score_leads(self):
+        print("\n[FLOW_STEP] ==> @listen: score_leads")
         print("Scoring leads")
         tasks = []
+        import json
 
         async def score_single_candidate(candidate: Candidate):
+            from lead_score_flow.lead_types import CandidateScore
             try:
                 if not USE_LLM:
                     # Offline deterministic score (cheap baseline)
@@ -296,9 +328,8 @@ class LeadScoreFlow(Flow[LeadScoreState]):
                         base = 35.0
                     elif "manager" in jt:
                         base = 25.0
-                    from lead_score_flow.lead_types import CandidateScore
-                    self.state.candidate_score.append(CandidateScore(candidate=candidate, score=base))
-                    return
+                    return CandidateScore(candidate=candidate, score=base)
+
                 result = await (
                     LeadScoreCrew()
                     .crew()
@@ -306,18 +337,42 @@ class LeadScoreFlow(Flow[LeadScoreState]):
                         inputs={
                             "candidate_id": candidate.id,
                             "name": candidate.job_title,
-                            "bio": candidate.company_name,  # You may want to update this to a richer bio
+                            "bio": candidate.company_name,
                             "job_description": JOB_DESCRIPTION,
                             "additional_instructions": self.state.scored_leads_feedback,
                         }
                     )
                 )
-                self.state.candidate_score.append(result.pydantic)
+                
+                # First, try to use the pydantic object directly
+                if result.pydantic and isinstance(result.pydantic, CandidateScore):
+                    return result.pydantic
+
+                # Fallback: If pydantic fails, parse the raw string output
+                if isinstance(result.raw, str):
+                    print("Pydantic conversion failed, attempting to parse raw output.")
+                    data = json.loads(result.raw)
+                    # The crew might return the candidate as a nested JSON string, so parse again if needed
+                    if 'candidate' in data and isinstance(data['candidate'], str):
+                        data['candidate'] = json.loads(data['candidate'])
+                    
+                    # FIX: Manually cast candidate ID to string to prevent validation error
+                    if 'candidate' in data and isinstance(data['candidate'], dict):
+                        # Sanitize all None values in the nested candidate dictionary
+                        for key, value in data['candidate'].items():
+                            if value is None:
+                                data['candidate'][key] = ""
+                        if 'id' in data['candidate']:
+                            data['candidate']['id'] = str(data['candidate']['id'])
+                        
+                    return CandidateScore(**data)
+                
+                raise ValueError("Crew returned no usable output (pydantic or raw).")
+
             except Exception as e:
-                # Log error and append a failed score for this candidate
+                # Log error and return a failed score for this candidate
                 print(f"Error scoring candidate {candidate.id} ({candidate.job_title}): {e}")
-                from lead_score_flow.lead_types import CandidateScore
-                self.state.candidate_score.append(CandidateScore(candidate=candidate, score=0.0))
+                return CandidateScore(candidate=candidate, score=0.0)
 
         for candidate in self.state.candidates:
             print("Scoring candidate:", candidate.job_title)
@@ -325,16 +380,19 @@ class LeadScoreFlow(Flow[LeadScoreState]):
             tasks.append(task)
 
         candidate_scores = await asyncio.gather(*tasks)
-        print("Finished scoring leads: ", len(candidate_scores))
+        # Filter out any None results from catastrophic failures before appending
+        self.state.candidate_score = [score for score in candidate_scores if score is not None]
+        print("Finished scoring leads: ", len(self.state.candidate_score))
+        print("[FLOW_STEP] <== Exiting: score_leads")
 
     @router(score_leads)
-    def human_in_the_loop(self):
+    async def human_in_the_loop(self):
+        print("\n[FLOW_STEP] ==> @router: human_in_the_loop (NOW ASYNC)")
         """
-        Unchanged UX for HITL, but now we also:
-          - hydrate/sort leads
-          - compute best persona per lead (and export CSVs)
+        This router is now async. It calls the persona pipeline directly 
+        instead of dispatching an event, which solves the infinite loop.
         """
-        print("Finding the top 3 candidates for human to review")
+        print("Hydrating candidates and exporting scores...")
 
         # Hydrate: combine candidates with their scores
         self.state.hydrated_candidates = combine_candidates_with_scores(
@@ -363,99 +421,88 @@ class LeadScoreFlow(Flow[LeadScoreState]):
                     getattr(sc, "reason", "")
                 ])
         print(f"All scored candidates saved to {output_csv}")
-        # Immediately proceed to lightweight persona matching if personas exist and not yet run
-        print(
-            f"Router check -> personas: {bool(self.state.personas)}, "
-            f"match_ran: {self.state.persona_match_ran}, "
-            f"match_in_progress: {self.state.persona_match_in_progress}"
-        )
-        if self.state.personas and not self.state.persona_match_ran and not self.state.persona_match_in_progress:
-            print("Router: scheduling lightweight persona matching (top 3 per candidate)...")
-            return "generate_persona_matches"
-        if not self.state.personas:
-            print("No personas available; flow complete.")
-            return None
-        # Persona matching already executed
-        print("Persona matching already completed; flow complete.")
-        return None
 
-    @listen("generate_emails")
-    async def write_and_save_emails(self):
-        import re
+        # --- Sequential Logic ---
+        # If personas exist and the pipeline hasn't been run, run it directly.
+        if self.state.personas and not self.state.persona_match_ran:
+            print("Router: Directly calling the persona pipeline now.")
+            self.state.persona_match_ran = True  # Prevent re-runs
+            # Pass the original, complete candidates list to the pipeline
+            await self.run_persona_pipeline(candidates_for_pipeline=self.state.candidates)
+        elif not self.state.personas:
+            print("Router: No personas loaded. Skipping persona analysis.")
+        else:
+            print("Router: Persona pipeline has already been completed.")
 
-        print("Writing and saving emails for all leads.")
+        # After the pipeline (or skipping it), the flow is complete.
+        print(f"[FLOW_STEP] <== Exiting: human_in_the_loop, returning 'flow_complete'")
+        return "flow_complete"
 
-        # Determine the top 3 candidates to proceed with
-        top_candidate_ids = {
-            candidate.id for candidate in self.state.hydrated_candidates[:3]
-        }
+    # DECORATOR REMOVED - This is now a regular method, not a listener
+    async def run_persona_pipeline(self, candidates_for_pipeline: List[Candidate]):
+        """
+        This is now a regular method called directly by the router.
+        It combines the logic of the old `generate_persona_matches`
+        and `deep_dive_personas` into a single, sequential pipeline.
+        It receives a clean list of candidates to ensure data integrity.
+        """
+        print("\n[FLOW_STEP] ==> Now a regular method: run_persona_pipeline (Unified)")
 
-        # Map best persona per lead (if matches exist)
-        best_map = {m.lead_id: m for m in (self.state.lead_persona_matches or [])}
+        # Idempotency Guard: Prevent re-running the whole pipeline
+        if self.state.persona_match_in_progress:
+            print("Persona pipeline is already in progress. Skipping.")
+            return
 
-        tasks = []
+        # Set flags to indicate the pipeline is running
+        self.state.persona_match_in_progress = True
 
-        # Create the directory 'email_responses' if it doesn't exist
-        output_dir = Path(__file__).parent / "email_responses"
-        print("output_dir:", output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # =================================================
+        # 1. Lightweight Persona Matching
+        # =================================================
+        print("\n[PIPELINE_SUB-STEP] Starting: Lightweight Persona Matching")
+        from lead_score_flow.lead_types import CandidatePersonaMatches, PersonaMatchItem
+        import csv
 
-        async def write_email(candidate):
-            # Check if the candidate is among the top 3
-            proceed_with_candidate = candidate.id in top_candidate_ids
+        def simple_score(title: str, persona) -> float:
+            t = set(w.lower() for w in title.split() if len(w) > 2)
+            pname = persona.name.lower()
+            roles = " ".join(persona.roles or []).lower()
+            bag = set([w for w in (pname + " " + roles).split() if len(w) > 2])
+            inter = t & bag
+            if not t or not bag: return 0.0
+            return round(100.0 * len(inter) / len(t), 1)
 
-            # Fetch persona match (may be absent if no personas loaded)
-            pm = best_map.get(candidate.id)
-
-            # Kick off the LeadResponseCrew for each candidate
-            result = await (
-                LeadResponseCrew()
-                .crew()
-                .kickoff_async(
-                    inputs={
-                        "candidate_id": candidate.id,
-                        "name": candidate.job_title,
-                        "bio": candidate.company_name,  # You may want to update this to a richer bio
-                        "proceed_with_candidate": proceed_with_candidate,
-
-                        # NEW: persona context for email personalization
-                        "persona_id": getattr(pm, "best_persona_id", ""),
-                        "persona_name": getattr(pm, "best_persona_name", ""),
-                        "persona_similarity": getattr(pm, "similarity_score", 0.0),
-                        "persona_alignment": getattr(pm, "alignment_score", 0.0),
-                    }
-                )
+        all_matches: list[CandidatePersonaMatches] = []
+        # Use the clean candidate list passed into this method
+        for cand in candidates_for_pipeline:
+            scores = sorted(
+                [(simple_score(cand.job_title, p), p) for p in self.state.personas if simple_score(cand.job_title, p) > 0],
+                reverse=True, key=lambda x: x[0]
             )
+            top_items = [PersonaMatchItem(persona_id=p.id, persona_name=p.name, score=s, rationale="token_overlap") for s, p in scores[:3]]
+            all_matches.append(CandidatePersonaMatches(candidate_id=cand.id, candidate_title=cand.job_title, matches=top_items))
 
-            # Sanitize the candidate's name to create a valid filename
-            safe_name = re.sub(r"[^a-zA-Z0-9_\- ]", "", candidate.job_title)
-            filename = f"{safe_name}.txt"
-            print("Filename:", filename)
+        self.state.persona_multi_matches = all_matches
+        self._export_top3_persona_matches() # Export wide CSV
+        print("Lightweight persona matching complete. Results exported.")
 
-            # Write the email content to a text file
-            file_path = output_dir / filename
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(result.raw)
 
-            # Return a message indicating the email was saved
-            return f"Email saved for {candidate.job_title} as {filename}"
+        # =================================================
+        # 2. Deep Dive Analysis
+        # =================================================
+        if not USE_LLM_DEEPDIVE:
+            print("\n[PIPELINE_SUB-STEP] Skipping: Deep Dive (USE_LLM_DEEPDIVE is false)")
+        else:
+            print("\n[PIPELINE_SUB-STEP] Starting: Deep Dive Analysis")
+            # Pass the clean candidate list to the deep dive logic as well
+            await self._execute_deep_dive_logic(candidates_for_pipeline=candidates_for_pipeline)
 
-        # Create tasks for all candidates
-        for candidate in self.state.hydrated_candidates:
-            task = asyncio.create_task(write_email(candidate))
-            tasks.append(task)
 
-        # Run all email-writing tasks concurrently and collect results
-        email_results = await asyncio.gather(*tasks)
-
-        # After all emails have been generated and saved
-        print("\nAll emails have been written and saved to 'email_responses' folder.")
-        for message in email_results:
-            print(message)
-
-    # =========================
-    # CSV Export Helpers (NEW)
-    # =========================
+        # Mark the entire pipeline as complete
+        self.state.persona_match_in_progress = False
+        print("\n[FLOW_STEP] <== Exiting: run_persona_pipeline. Control returns to human_in_the_loop.")
+        # No return value needed as it's not a listener anymore
+        
 
     def _export_top3_persona_matches(self):
         """Export top 3 persona matches per candidate in wide format."""
@@ -484,252 +531,111 @@ class LeadScoreFlow(Flow[LeadScoreState]):
                 w.writerow(cells)
         print(f"Wrote {out.name}")
 
-    # =============================
-    # NEW: Lightweight persona matches
-    # =============================
-    @listen("generate_persona_matches")
-    async def generate_persona_matches(self):
-        from lead_score_flow.lead_types import CandidatePersonaMatches, PersonaMatchItem
+    async def _execute_deep_dive_logic(self, candidates_for_pipeline: List[Candidate]):
+        """Helper containing the implementation from the old `deep_dive_personas`."""
+        from lead_score_flow.lead_types import CandidatePersonaDeepDive, PersonaDeepDiveAssessment
         import csv
-
-        print(
-            f"Enter generate_persona_matches -> ran={self.state.persona_match_ran}, in_progress={self.state.persona_match_in_progress}"
-        )
-        if self.state.persona_match_ran or self.state.persona_match_in_progress:
-            print("Persona matching already executed or in progress; skipping.")
-            return None
-
-        # Reentrancy guard (set both early to avoid router loops)
-        self.state.persona_match_in_progress = True
-        self.state.persona_match_ran = True
-
-        if not self.state.personas:
-            print("No personas loaded; cannot match.")
-            # revert ran flag as nothing executed
-            self.state.persona_match_ran = False
-            self.state.persona_match_in_progress = False
-            return None
-        if not self.state.hydrated_candidates:
-            print("No scored candidates yet; run scoring first.")
-            # revert ran flag as nothing executed
-            self.state.persona_match_ran = False
-            self.state.persona_match_in_progress = False
-            return None
-
-        def simple_score(title: str, persona) -> float:
-            t = set(w.lower() for w in title.split() if len(w) > 2)
-            pname = persona.name.lower()
-            roles = " ".join(persona.roles or []).lower()
-            bag = set([w for w in (pname + " " + roles).split() if len(w) > 2])
-            inter = t & bag
-            if not t or not bag:
-                return 0.0
-            return round(100.0 * len(inter) / len(t), 1)
-
-        top_k = 3
-        all_matches: list[CandidatePersonaMatches] = []
-        for sc in self.state.hydrated_candidates:
-            scores = []
-            title = sc.candidate.job_title
-            for p in self.state.personas:
-                s = simple_score(title, p)
-                if s > 0:
-                    scores.append((s, p))
-            scores.sort(reverse=True, key=lambda x: x[0])
-            top = scores[:top_k]
-            items = [PersonaMatchItem(persona_id=p.id, persona_name=p.name, score=s, rationale="token_overlap") for s, p in top]
-            all_matches.append(CandidatePersonaMatches(candidate_id=sc.candidate.id, candidate_title=title, matches=items))
-
-        self.state.persona_multi_matches = all_matches
-
-        # Narrow CSV (long form) still available if needed
-        out_long = Path(__file__).parent / "persona_matches.csv"
-        with out_long.open("w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["candidate_id", "candidate_title", "persona_id", "persona_name", "score", "rationale"])
-            for row in all_matches:
-                if not row.matches:
-                    w.writerow([row.candidate_id, row.candidate_title, "", "", 0, "no_match"])
-                else:
-                    for m in row.matches:
-                        w.writerow([row.candidate_id, row.candidate_title, m.persona_id, m.persona_name, m.score, m.rationale])
-        print(f"Lightweight persona matches exported to {out_long}")
-
-        # Wide CSV export (top 3 columns)
-        self._export_top3_persona_matches()
-        # Mark complete
-        self.state.persona_match_in_progress = False
-
-        # Chain into deep dive evaluation immediately to avoid router loops
-        if any(r.matches for r in all_matches):
-            print("Proceeding to deep dive persona evaluation...")
-            await self.deep_dive_personas()
-            return None
-        print("Flow complete (no matches to deep dive).")
-        return None
-
-    # =============================
-    # Deep Dive Persona Evaluation
-    # =============================
-    @listen("persona_deepdive")
-    async def deep_dive_personas(self):
-        from lead_score_flow.lead_types import CandidatePersonaDeepDive
-        import csv
+        import json
+        import asyncio
 
         if self.state.deep_dive_ran or self.state.deep_dive_in_progress:
-            print("Deep dive already executed or in progress; skipping.")
-            return None
-
+            return
         self.state.deep_dive_in_progress = True
 
-        if not self.state.persona_multi_matches:
-            print("No persona multi-match results to deep dive.")
-            self.state.deep_dive_in_progress = False
-            return None
-        results: list[CandidatePersonaDeepDive] = []
+        # Use the clean candidate list passed into this method
+        sc_map = {c.id: c for c in candidates_for_pipeline}
+        tasks = []
 
-        # Map candidate id -> ScoredCandidate for context
-        sc_map = {sc.candidate.id: sc for sc in self.state.hydrated_candidates}
+        async def run_deepdive_for(cpm: CandidatePersonaMatches):
+            sc = sc_map.get(cpm.candidate_id)
+            if not sc: return None
 
-        async def run_deepdive_for(candidate_id: str, cpm):
-            sc = sc_map.get(candidate_id)
-            if not sc:
-                return None
-            # Prepare structured input
-            personas_payload = [
-                {
-                    "persona_id": m.persona_id,
-                    "persona_name": m.persona_name,
-                    "lexical_score": m.score,
-                    "rationale": m.rationale,
-                }
-                for m in cpm.matches
-            ]
-            # Offline synthetic deep dive (no-LLM path)
-            if not USE_LLM_DEEPDIVE:
-                from lead_score_flow.lead_types import PersonaDeepDiveAssessment, CandidatePersonaDeepDive
-                assessments = []
-                for i, m in enumerate(cpm.matches[:3]):
-                    rel = float(m.score)
-                    strengths = [f"Title overlap with persona '{m.persona_name}'"] if rel > 0 else []
-                    risks = ["Limited lexical overlap"] if rel < 10 else []
-                    hooks = [f"Reference {sc.candidate.job_title} challenges in {sc.candidate.primary_line_of_business}"]
-                    assessments.append(
-                        PersonaDeepDiveAssessment(
-                            persona_id=m.persona_id,
-                            persona_name=m.persona_name,
-                            relevance=rel,
-                            strengths=strengths,
-                            risks=risks,
-                            messaging_hooks=hooks,
-                            overall_fit="Primary contact" if i == 0 else "Secondary contact",
-                            recommended=(i == 0),
-                        )
-                    )
-                best_id = assessments[0].persona_id if assessments else ""
-                return CandidatePersonaDeepDive(
-                    candidate_id=candidate_id,
-                    candidate_title=sc.candidate.job_title,
-                    assessments=assessments,
-                    best_persona_id=best_id,
-                    reasoning="Selected top lexical match as best fit (offline mode).",
-                )
+            personas_payload = [{"persona_id": m.persona_id, "persona_name": m.persona_name, "lexical_score": m.score} for m in cpm.matches]
+            personas_payload_json = json.dumps(personas_payload, ensure_ascii=False)
+
             try:
-                import asyncio as __asyncio
                 crew = PersonaPipelineCrew().crew()
-                result = await __asyncio.wait_for(
-                    crew.kickoff_async(
-                        inputs={
-                            "candidate_id": candidate_id,
-                            "candidate_title": sc.candidate.job_title,
-                            "company_name": sc.candidate.company_name,
-                            "job_function": sc.candidate.job_function,
-                            "job_level": sc.candidate.job_level,
-                            "line_of_business": sc.candidate.primary_line_of_business,
-                            "persona_matches": personas_payload,
-                        }
-                    ),
+                # Sanitize inputs to prevent errors with None values
+                inputs = {
+                    "candidate_id": cpm.candidate_id,
+                    "candidate_title": sc.job_title or "",
+                    "company_name": sc.company_name or "",
+                    "job_function": sc.job_function or "",
+                    "job_level": sc.job_level or "",
+                    "line_of_business": sc.primary_line_of_business or "",
+                    "persona_matches_json": personas_payload_json,
+                }
+                result = await asyncio.wait_for(
+                    crew.kickoff_async(inputs=inputs),
                     timeout=float(os.getenv("DEEPDIVE_TIMEOUT_SECONDS", "120")),
                 )
                 if hasattr(result, "pydantic") and isinstance(result.pydantic, CandidatePersonaDeepDive):
                     return result.pydantic
-                print(f"Deep dive returned unexpected result type for {candidate_id}")
             except Exception as e:
-                print(f"Deep dive failed for candidate {candidate_id}: {e}")
+                print(f"Deep dive failed for candidate {cpm.candidate_id}: {e}")
             return None
 
-        import asyncio as _asyncio
-        tasks = []
         for cpm in self.state.persona_multi_matches:
-            if not cpm.matches:
-                continue
-            tasks.append(_asyncio.create_task(run_deepdive_for(cpm.candidate_id, cpm)))
-        gathered = await _asyncio.gather(*tasks)
+            if cpm.matches:
+                tasks.append(asyncio.create_task(run_deepdive_for(cpm)))
+
+        gathered = await asyncio.gather(*tasks)
         results = [r for r in gathered if r]
         self.state.persona_deepdive_results = results
 
-        if not results:
-            print("No deep dive results produced.")
-            # Export a minimal error CSV for visibility
-            out_err = Path(__file__).parent / "persona_deepdive_errors.csv"
-            with out_err.open("w", newline="", encoding="utf-8") as f:
+        if results:
+            # Long form export
+            out_long = Path(__file__).parent / "persona_deepdive_long.csv"
+            with out_long.open("w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
-                w.writerow(["candidate_id", "candidate_title", "error"])
-                for cpm in self.state.persona_multi_matches:
-                    if cpm.matches:
-                        title = sc_map.get(cpm.candidate_id).candidate.job_title if sc_map.get(cpm.candidate_id) else ""
-                        w.writerow([cpm.candidate_id, title, "deep_dive_failed_or_timed_out"])
-            print(f"Wrote {out_err.name}")
-            self.state.deep_dive_in_progress = False
-            return None
+                w.writerow([
+                    "candidate_id", "candidate_title", "persona_id", "persona_name", "relevance", "recommended", "overall_fit", "strengths", "risks", "messaging_hooks"
+                ])
+                for r in results:
+                    for a in r.assessments:
+                        w.writerow([
+                            r.candidate_id,
+                            r.candidate_title,
+                            a.persona_id,
+                            a.persona_name,
+                            a.relevance,
+                            a.recommended,
+                            a.overall_fit,
+                            "|".join(a.strengths or []),
+                            "|".join(a.risks or []),
+                            "|".join(a.messaging_hooks or []),
+                        ])
+            print(f"Wrote {out_long.name}")
 
-        # Long form export
-        out_long = Path(__file__).parent / "persona_deepdive_long.csv"
-        with out_long.open("w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow([
-                "candidate_id", "candidate_title", "persona_id", "persona_name", "relevance", "recommended", "overall_fit", "strengths", "risks", "messaging_hooks"
-            ])
-            for r in results:
-                for a in r.assessments:
-                    w.writerow([
-                        r.candidate_id,
-                        r.candidate_title,
-                        a.persona_id,
-                        a.persona_name,
-                        a.relevance,
-                        a.recommended,
-                        a.overall_fit,
-                        "|".join(a.strengths or []),
-                        "|".join(a.risks or []),
-                        "|".join(a.messaging_hooks or []),
-                    ])
-        print(f"Wrote {out_long.name}")
+            # Best persona summary (wide)
+            out_best = Path(__file__).parent / "persona_deepdive_best.csv"
+            with out_best.open("w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["candidate_id", "candidate_title", "best_persona_id", "best_persona_name", "relevance", "overall_fit", "reasoning"])
+                for r in results:
+                    best = next((a for a in r.assessments if a.recommended), None)
+                    if best:
+                        w.writerow([
+                            r.candidate_id,
+                            r.candidate_title,
+                            best.persona_id,
+                            best.persona_name,
+                            best.relevance,
+                            best.overall_fit,
+                            r.reasoning.replace('\n', ' '),
+                        ])
+            print(f"Wrote {out_best.name}")
+            print(f"Deep dive analysis complete. Found {len(results)} results.")
+        else:
+            print("No deep dive results were produced.")
 
-        # Best persona summary (wide)
-        out_best = Path(__file__).parent / "persona_deepdive_best.csv"
-        with out_best.open("w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["candidate_id", "candidate_title", "best_persona_id", "best_persona_name", "relevance", "overall_fit", "reasoning"])
-            for r in results:
-                best = next((a for a in r.assessments if a.recommended), None)
-                if best:
-                    w.writerow([
-                        r.candidate_id,
-                        r.candidate_title,
-                        best.persona_id,
-                        best.persona_name,
-                        best.relevance,
-                        best.overall_fit,
-                        r.reasoning.replace('\n', ' '),
-                    ])
-        print(f"Wrote {out_best.name}")
-        print("Deep dive complete.")
         self.state.deep_dive_ran = True
         self.state.deep_dive_in_progress = False
+
+    def flow_complete(self):
+        print("\n[FLOW_STEP] ==> flow_complete (TERMINAL)")
+        print("[FLOW_STEP] <== Exiting: flow_complete. The flow has ended.")
         return None
-
-
 
 def kickoff():
     """Run the flow."""

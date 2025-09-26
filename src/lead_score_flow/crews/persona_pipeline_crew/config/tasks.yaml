@@ -5,6 +5,19 @@ evaluate_personas:
     1. Candidate core fields (id, job title, company, function, level, segments)
     2. Up to three lightweight persona matches with rough lexical similarity scores.
 
+    CANDIDATE CONTEXT
+    ------------------
+    ID: {candidate_id}
+    Title: {candidate_title}
+    Company: {company_name}
+    Function: {job_function}
+    Level: {job_level}
+    Line of Business: {line_of_business}
+
+    PERSONA MATCHES (JSON)
+    ----------------------
+    {persona_matches_json}
+
     Your job:
     - Enrich each persona with a short strengths list (why it fits this candidate)
     - Add potential risks or mismatches
@@ -16,7 +29,7 @@ evaluate_personas:
 
     Output MUST be valid JSON matching the CandidatePersonaDeepDive Pydantic schema.
   expected_output: >-
-    A JSON object with keys: candidate_id, candidate_title, assessments (list of persona assessments with persona_id, persona_name, relevance, strengths, risks, messaging_hooks, overall_fit, recommended), best_persona_id, reasoning.
+    STRICT: Return ONLY a valid JSON object (no prose, no backticks) matching the CandidatePersonaDeepDive schema with keys: candidate_id, candidate_title, assessments (list of objects with persona_id, persona_name, relevance, strengths, risks, messaging_hooks, overall_fit, recommended), best_persona_id, reasoning.
   agent: deepdive_analyst
   async_execution: false
   output_file: null

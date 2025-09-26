@@ -44,20 +44,20 @@ class Candidate(BaseModel):
     id: str
     job_title: str
     company_name: str
-    primary_line_of_business: str
-    primary_line_of_business_segment: str
-    primary_line_of_business_unique_id: str
-    job_title_department: str
-    job_title_c: str
-    job_function: str
-    job_function_segment: str
-    job_level: str
-    job_level_segment: str
-    job_segment: str
-    role: str
-    role_1: str
-    secondary_line_of_business: str
-    source_system: str
+    primary_line_of_business: Optional[str] = ""
+    primary_line_of_business_segment: Optional[str] = ""
+    primary_line_of_business_unique_id: Optional[str] = ""
+    job_title_department: Optional[str] = ""
+    job_title_c: Optional[str] = ""
+    job_function: Optional[str] = ""
+    job_function_segment: Optional[str] = ""
+    job_level: Optional[str] = ""
+    job_level_segment: Optional[str] = ""
+    job_segment: Optional[str] = ""
+    role: Optional[str] = ""
+    role_1: Optional[str] = ""
+    secondary_line_of_business: Optional[str] = ""
+    source_system: Optional[str] = ""
     score: float = 0.0
 
 class CandidateScore(BaseModel):

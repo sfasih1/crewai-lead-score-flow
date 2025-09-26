@@ -17,14 +17,24 @@ def combine_candidates_with_scores(
     score_dict = {cs.candidate.id: cs for cs in candidate_scores if cs and cs.candidate}
     print("SCORE DICT KEYS:", list(score_dict.keys()))
 
+    # Create a dictionary of the original candidates for easy lookup
+    candidate_dict = {c.id: c for c in candidates}
+
     scored_candidates: List[ScoredCandidate] = []
-    for cand in candidates:
-        cs = score_dict.get(cand.id)
-        if cs:
-            # ScoredCandidate model expects (candidate, score, reason)
-            reason = getattr(cs, 'reason', '')
-            scored_candidates.append(ScoredCandidate(candidate=cand, score=cs.score, reason=reason))
+    for score_id, score_obj in score_dict.items():
+        # Use the original candidate data from candidate_dict
+        original_candidate = candidate_dict.get(score_id)
+        if original_candidate:
+            reason = getattr(score_obj, 'reason', '')
+            # Create the ScoredCandidate with the complete, original candidate object
+            scored_candidates.append(ScoredCandidate(candidate=original_candidate, score=score_obj.score, reason=reason))
         else:
+            # This case should ideally not happen if the lists are in sync
+            scored_candidates.append(ScoredCandidate(candidate=score_obj.candidate, score=score_obj.score, reason="Original candidate not found"))
+
+    # Add any candidates that were not scored
+    for cand in candidates:
+        if cand.id not in score_dict:
             scored_candidates.append(ScoredCandidate(candidate=cand, score=0.0, reason="Not scored (API error or rate limit)"))
 
     print("SCORED CANDIDATES (count):", len(scored_candidates))

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from lead_score_flow.lead_types import CandidatePersonaDeepDive
@@ -25,9 +26,11 @@ class PersonaPipelineCrew:
 
     @agent
     def deepdive_analyst(self) -> Agent:
+        llm_model = os.getenv("LLM_MODEL")
         return Agent(
             config=self.agents_config["deepdive_analyst"],
             verbose=True,
+            llm=llm_model if llm_model else None,
         )
 
     @task
@@ -38,7 +41,9 @@ class PersonaPipelineCrew:
         # CrewAI will route calls accordingly when configured.
         return Task(
             config=self.tasks_config["evaluate_personas"],
+            # Enforce structured JSON output and Pydantic validation
             output_pydantic=CandidatePersonaDeepDive,
+            output_json=CandidatePersonaDeepDive,
             verbose=True,
         )
 

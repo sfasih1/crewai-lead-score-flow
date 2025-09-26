@@ -1,3 +1,4 @@
+import os
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 
@@ -11,10 +12,12 @@ class LeadResponseCrew:
 
     @agent
     def email_followup_agent(self) -> Agent:
+        llm_model = os.getenv("LLM_MODEL")
         return Agent(
             config=self.agents_config["email_followup_agent"],
             verbose=True,
             allow_delegation=False,
+            llm=llm_model if llm_model else None,
         )
 
     @task
