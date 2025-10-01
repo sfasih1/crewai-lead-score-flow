@@ -1,63 +1,64 @@
-# Lead Score Flow
+# Lead Persona Match + Deep Dive
 
-Welcome to the Lead Score Flow project, powered by [crewAI](https://crewai.com). This example demonstrates how you can leverage Flows from crewAI to automate the process of scoring leads, including data collection, analysis, and scoring. By utilizing Flows, the process becomes much simpler and more efficient.
+This project runs a simple, reliable pipeline:
 
-## Overview
+1) Select a contacts CSV (or set LEADS_CSV to skip the dialog)
+2) Auto-load persona JSONs from the project root
+3) Compute lightweight top-3 persona matches per candidate (token-free)
+4) Optional deep-dive analysis via a single CrewAI task (LLM)
 
-This flow will guide you through the process of setting up an automated lead scoring system. Here's a brief overview of what will happen in this flow:
+Outputs are written to `src/lead_score_flow/`:
+- persona_top3.csv (lightweight matches)
+- persona_deepdive_long.csv (all assessments)
+- persona_deepdive_best.csv (one recommended persona per candidate)
 
-1. **Load Leads**: The flow starts by loading lead data from a CSV file named `leads.csv`.
+The code is intentionally linear, with robust logging and provider safeguards for OpenRouter/OpenAI/Perplexity/Azure.
 
-2. **Score Leads**: The `LeadScoreCrew` is kicked off to score the loaded leads based on predefined criteria.
+## Setup
 
-3. **Human in the Loop**: The top 3 candidates are presented for human review, allowing for additional feedback or proceeding with writing emails.
+Requirements: Python 3.11+ recommended; virtualenv suggested.
 
-4. **Write and Save Emails**: Emails are generated and saved for all leads.
-
-By following this flow, you can efficiently automate the process of scoring leads, leveraging the power of multiple AI agents to handle different aspects of the lead scoring workflow.
-
-## Installation
-
-Ensure you have Python >=3.10 <=3.13 installed on your system. First, if you haven't already, install CrewAI:
-
+1) Install dependencies
 ```bash
-pip install crewai
+pip install -U pip
+pip install -r requirements.txt  # or: pip install crewai python-dotenv pydantic
 ```
 
-Next, navigate to your project directory and install the dependencies:
-
-1. First lock the dependencies and then install them:
-
-```bash
-crewai install
+2) Configure environment
+Copy `.env.example` to `.env` and fill in your key(s). For OpenRouter:
+```ini
+OPENROUTER_API_KEY="your-openrouter-key"
+LLM_MODEL="openrouter/openai/gpt-4o-mini"  # or omit to let fallback choose
+USE_LLM_DEEPDIVE=1
 ```
 
-### Customizing & Dependencies
+Notes
+- If `LLM_MODEL` is omitted, the app will choose a sensible default for your provider and try a few fallback models.
+- You can also use `OPENAI_API_KEY`, `PERPLEXITY_API_KEY`, or `AZURE_OPENAI_API_KEY` instead of OpenRouter.
+- `.env` is ignored by git. Do not commit secrets.
 
-**Add your `OPENAI_API_KEY` into the `.env` file**  
-**Add your `SERPER_API_KEY` into the `.env` file**
+## Run
 
-
-## Running the Project
-
-### Run the Flow
-
-To kickstart your crew of AI agents and begin task execution, run this from the root folder of your project:
-
+From the repo root:
 ```bash
-crewai run
+python -u src/lead_score_flow/main.py
 ```
-```bash
-uv run kickoff
-```
-### Plot the Flow
+You’ll be prompted to select your contacts CSV unless you set `LEADS_CSV`.
 
-```bash
-uv run plot
-```
+## Troubleshooting
 
-This command initializes the lead_score_flow, assembling the agents and assigning them tasks as defined in your configuration.
+- If a model isn’t available on your account/plan, the app logs a warning and automatically tries fallback models.
+- Deep-dive input snapshots are written under `src/lead_score_flow/_debug_payloads/` (ignored by git) to aid debugging.
+- Set `LITELLM_DEBUG=1` for more provider diagnostics. Set `API_SANITY_CHECK=1` to print quick config tips at startup.
 
-When you kickstart the flow, it will orchestrate multiple crews to perform the tasks. The flow will first collect lead data, then analyze the data, score the leads and generate email drafts.
+## What’s under the hood
+
+- `src/lead_score_flow/main.py`: Orchestrates IO, matching, and deep dive. No event-driven flow or decorators.
+- `src/lead_score_flow/crews/persona_pipeline_crew/`: Minimal CrewAI agent+task for the deep dive, with model normalization and fallbacks.
+- `src/lead_score_flow/lead_types.py`: Pydantic models for inputs/outputs.
+
+## Safety
+
+`.gitignore` excludes `.env`, virtualenv, generated CSVs, and debug payloads. Review `.gitignore` before pushing.
 
 
