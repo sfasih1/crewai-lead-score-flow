@@ -32,4 +32,4 @@ evaluate_personas:
     STRICT: Return ONLY a valid JSON object (no prose, no backticks) matching the CandidatePersonaDeepDive schema with keys: candidate_id, candidate_title, assessments (list of objects with persona_id, persona_name, relevance, strengths, risks, messaging_hooks, overall_fit, recommended), best_persona_id, reasoning.
   agent: deepdive_analyst
   async_execution: false
-  output_file: null
+  # No output_file here; we handle exports in code.

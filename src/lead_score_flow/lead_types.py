@@ -1,6 +1,6 @@
 # Renamed from types.py to lead_types.py
 from typing import List, Optional, Dict
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class LeadPersonaMatch(BaseModel):
     lead_id: str
@@ -20,16 +20,16 @@ class PersonaMatchItem(BaseModel):
 class CandidatePersonaMatches(BaseModel):
     candidate_id: str
     candidate_title: str
-    matches: List[PersonaMatchItem] = []
+    matches: List[PersonaMatchItem] = Field(default_factory=list)
 
 # Deep-dive LLM evaluation structures
 class PersonaDeepDiveAssessment(BaseModel):
     persona_id: str
     persona_name: str
     relevance: float  # 0..100 subjective relevance from LLM
-    strengths: List[str] = []
-    risks: List[str] = []
-    messaging_hooks: List[str] = []
+    strengths: List[str] = Field(default_factory=list)
+    risks: List[str] = Field(default_factory=list)
+    messaging_hooks: List[str] = Field(default_factory=list)
     overall_fit: str = ""  # short phrase summary
     recommended: bool = False  # true for exactly one best persona per candidate
 
@@ -67,22 +67,22 @@ class CandidateScore(BaseModel):
 class ScoredCandidate(BaseModel):
     candidate: Candidate
     score: float
-    reason: str
+    reason: Optional[str] = ""
 
 class Persona(BaseModel):
     id: str
     name: str
     # We’ll accept either “Business Unit”, “Segment”, or “Industry” from the doc
     segment: Optional[str] = None
-    industries: List[str] = []            # we will mirror segment into this for compatibility
-    roles: List[str] = []                 # parsed from Titles/Roles section
+    industries: List[str] = Field(default_factory=list)            # we will mirror segment into this for compatibility
+    roles: List[str] = Field(default_factory=list)                 # parsed from Titles/Roles section
     description: Optional[str] = ""       # optional, if found
     link: Optional[str] = ""              # optional (e.g., from doc)
     # Not provided by PDFs typically, but kept for future enrichment:
     employee_count_range: Optional[List[Optional[int]]] = None
-    regions: List[str] = []
-    tech_stack_keywords: List[str] = []
+    regions: List[str] = Field(default_factory=list)
+    tech_stack_keywords: List[str] = Field(default_factory=list)
     budget_min: Optional[float] = None
-    pain_points: List[str] = []
-    compliance_needs: List[str] = []
+    pain_points: List[str] = Field(default_factory=list)
+    compliance_needs: List[str] = Field(default_factory=list)
     priority_weights: Optional[Dict[str, float]] = None

@@ -10,3 +10,6 @@ src/lead_score_flow/persona_top3.csv
 src/lead_score_flow/persona_deepdive_long.csv
 src/lead_score_flow/persona_deepdive_best.csv
 src/lead_score_flow/persona_deepdive_errors.csv
+# Debug payload snapshots
+src/lead_score_flow/_debug_payloads/
+**/_debug_payloads/
